@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { spawn, ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,36 +8,14 @@ import { IPC, JoinerSettings } from '../constants';
 // wintun adapter and the route table are exclusive resources.
 let joinerProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
-let captchaWindow: BrowserWindow | null = null;
 let userRequestedStop = false;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let retryCount = 0;
 let lastSettings: JoinerSettings | null = null;
 const MAX_RETRIES = 8;
 
-function openCaptchaWindow(url: string) {
-  if (captchaWindow && !captchaWindow.isDestroyed()) {
-    captchaWindow.loadURL(url);
-    captchaWindow.focus();
-    return;
-  }
-  captchaWindow = new BrowserWindow({
-    width: 520,
-    height: 640,
-    title: 'Solve the captcha',
-    parent: mainWindow ?? undefined,
-    autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
-  });
-  captchaWindow.loadURL(url);
-  captchaWindow.on('closed', () => { captchaWindow = null; });
-}
-
-function closeCaptchaWindow() {
-  if (captchaWindow && !captchaWindow.isDestroyed()) {
-    captchaWindow.close();
-  }
-  captchaWindow = null;
+function openCaptchaInBrowser(url: string) {
+  shell.openExternal(url);
 }
 
 function resolveJoinerExe(): string {
@@ -153,15 +131,12 @@ function spawnJoiner(settings: JoinerSettings): { ok: boolean; error?: string } 
     }
     const captchaMatch = text.match(/STATUS:CAPTCHA:(\S+)/);
     if (captchaMatch) {
-      openCaptchaWindow(captchaMatch[1]);
-    } else if (captchaWindow && /captcha solved|Auth complete|TUNNEL/i.test(text)) {
-      closeCaptchaWindow();
+      openCaptchaInBrowser(captchaMatch[1]);
     }
   };
   joinerProcess.stdout?.on('data', (b: Buffer) => handleOutput(b.toString()));
   joinerProcess.stderr?.on('data', (b: Buffer) => handleOutput(b.toString()));
   joinerProcess.on('exit', (code, signal) => {
-    closeCaptchaWindow();
     send(IPC.LOG, `\n[main] joiner exited code=${code} signal=${signal}\n`);
     send(IPC.STATUS, 'stopped');
     send(IPC.RUNNING, false);
@@ -204,7 +179,6 @@ ipcMain.handle(IPC.STOP, async () => {
 });
 
 function stopJoiner() {
-  closeCaptchaWindow();
   if (!joinerProcess) return;
   // On Linux when the Go binary was spawned via pkexec, it runs as
   // root and we (the user) cannot SIGTERM it. The binary watches
